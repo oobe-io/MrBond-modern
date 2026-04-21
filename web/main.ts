@@ -51,7 +51,8 @@ async function init(): Promise<void> {
       paramList.appendChild(li);
     }
 
-    // トポロジ表示
+    // トポロジ表示（SVGグラフ + 詳細リスト）
+    renderGraphSvg(bgs, document.getElementById('graph-svg-container')!);
     renderTopology(bgs, graphInfo);
 
     status.textContent = `モデル準備完了: ${bgs.elements.length} 要素, ${par.pa.size} パラメータ, T=${par.T0}～${par.T1}s, Δt=${par.TI}`;
@@ -87,7 +88,151 @@ async function init(): Promise<void> {
   }
 }
 
-function renderTopology(bgs: Awaited<ReturnType<typeof parseBgs>>, container: HTMLElement): void {
+/**
+ * BGS のトポロジを SVG で可視化する。
+ * 力学的レイアウトは省略し、「Mr.Bond っぽい」シンプルな円形配置を採用。
+ * - 0-junction / 1-junction は小さい円で中心に「0」「1」を表示
+ * - 要素 (SE/SF/I/C/R/TF/GY) は矩形ラベル
+ * - ボンドは線で結び、中央にボンド番号
+ */
+function renderGraphSvg(
+  bgs: ReturnType<typeof parseBgs>,
+  container: HTMLElement,
+): void {
+  container.innerHTML = '';
+  const W = container.clientWidth || 600;
+  const H = 300;
+  const svgNs = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNs, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
+  // 全要素の位置を決定（円形配置）
+  const cx = W / 2;
+  const cy = H / 2;
+  const radius = Math.min(W, H) * 0.38;
+  const n = bgs.elements.length;
+  const positions = new Map<string, { x: number; y: number }>();
+  bgs.elements.forEach((el, i) => {
+    const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+    positions.set(el.name, {
+      x: cx + Math.cos(angle) * radius,
+      y: cy + Math.sin(angle) * radius,
+    });
+  });
+
+  // ボンド番号 → [端点要素] の逆引きマップ
+  const bondEndpoints = new Map<number, string[]>();
+  for (const el of bgs.elements) {
+    for (const b of el.bonds) {
+      const key = Math.abs(b);
+      const arr = bondEndpoints.get(key) ?? [];
+      arr.push(el.name);
+      bondEndpoints.set(key, arr);
+    }
+  }
+
+  // ボンドの線を先に描画（要素の下に）
+  const bondColor = '#4a5568';
+  for (const [bondId, endpoints] of bondEndpoints) {
+    if (endpoints.length !== 2) continue;
+    const p1 = positions.get(endpoints[0]!);
+    const p2 = positions.get(endpoints[1]!);
+    if (!p1 || !p2) continue;
+
+    const line = document.createElementNS(svgNs, 'line');
+    line.setAttribute('x1', String(p1.x));
+    line.setAttribute('y1', String(p1.y));
+    line.setAttribute('x2', String(p2.x));
+    line.setAttribute('y2', String(p2.y));
+    line.setAttribute('stroke', bondColor);
+    line.setAttribute('stroke-width', '1.5');
+    svg.appendChild(line);
+
+    const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+    const label = document.createElementNS(svgNs, 'text');
+    label.setAttribute('x', String(mid.x));
+    label.setAttribute('y', String(mid.y));
+    label.setAttribute('fill', '#9aa0a6');
+    label.setAttribute('font-size', '10');
+    label.setAttribute('text-anchor', 'middle');
+    label.setAttribute('dominant-baseline', 'middle');
+    label.textContent = String(bondId);
+    svg.appendChild(label);
+  }
+
+  // 要素を描画
+  const kindStyle: Record<string, { fill: string; stroke: string; symbol: string }> = {
+    Se: { fill: '#1e3a5f', stroke: '#60a5fa', symbol: 'SE' },
+    Sf: { fill: '#1e3a5f', stroke: '#60a5fa', symbol: 'SF' },
+    I: { fill: '#3d2e1f', stroke: '#fbbf24', symbol: 'I' },
+    C: { fill: '#1a3a2a', stroke: '#6ee7b7', symbol: 'C' },
+    R: { fill: '#3a1a1a', stroke: '#f87171', symbol: 'R' },
+    TF: { fill: '#2a1a3a', stroke: '#c084fc', symbol: 'TF' },
+    GY: { fill: '#2a1a3a', stroke: '#c084fc', symbol: 'GY' },
+    OneJunction: { fill: '#181c23', stroke: '#e8eaee', symbol: '1' },
+    ZeroJunction: { fill: '#181c23', stroke: '#e8eaee', symbol: '0' },
+  };
+
+  for (const el of bgs.elements) {
+    const pos = positions.get(el.name)!;
+    const style = kindStyle[el.kind] ?? kindStyle.R!;
+    const isJunction = el.kind === 'OneJunction' || el.kind === 'ZeroJunction';
+
+    if (isJunction) {
+      // 円形ジャンクション
+      const r = 14;
+      const circle = document.createElementNS(svgNs, 'circle');
+      circle.setAttribute('cx', String(pos.x));
+      circle.setAttribute('cy', String(pos.y));
+      circle.setAttribute('r', String(r));
+      circle.setAttribute('fill', style.fill);
+      circle.setAttribute('stroke', style.stroke);
+      circle.setAttribute('stroke-width', '1.5');
+      svg.appendChild(circle);
+
+      const text = document.createElementNS(svgNs, 'text');
+      text.setAttribute('x', String(pos.x));
+      text.setAttribute('y', String(pos.y));
+      text.setAttribute('fill', style.stroke);
+      text.setAttribute('font-size', '13');
+      text.setAttribute('font-weight', 'bold');
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('dominant-baseline', 'central');
+      text.textContent = style.symbol;
+      svg.appendChild(text);
+    } else {
+      // 矩形要素
+      const w = 42;
+      const h = 22;
+      const rect = document.createElementNS(svgNs, 'rect');
+      rect.setAttribute('x', String(pos.x - w / 2));
+      rect.setAttribute('y', String(pos.y - h / 2));
+      rect.setAttribute('width', String(w));
+      rect.setAttribute('height', String(h));
+      rect.setAttribute('rx', '3');
+      rect.setAttribute('fill', style.fill);
+      rect.setAttribute('stroke', style.stroke);
+      rect.setAttribute('stroke-width', '1.5');
+      svg.appendChild(rect);
+
+      const text = document.createElementNS(svgNs, 'text');
+      text.setAttribute('x', String(pos.x));
+      text.setAttribute('y', String(pos.y));
+      text.setAttribute('fill', style.stroke);
+      text.setAttribute('font-size', '11');
+      text.setAttribute('font-weight', '600');
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('dominant-baseline', 'central');
+      text.textContent = el.name;
+      svg.appendChild(text);
+    }
+  }
+
+  container.appendChild(svg);
+}
+
+function renderTopology(bgs: ReturnType<typeof parseBgs>, container: HTMLElement): void {
   container.innerHTML = '';
   for (const el of bgs.elements) {
     const div = document.createElement('div');
