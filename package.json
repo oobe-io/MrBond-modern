@@ -1,0 +1,17 @@
+{
+  "name": "mrbond-modern",
+  "version": "0.0.1",
+  "description": "Modern TypeScript port of Mr.Bond (Kyushu Institute of Technology bond graph simulator, original author deceased). Faithful reimplementation for cross-platform use.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test tests/**/*.test.ts",
+    "solver-check": "tsx tests/solver-analytical.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
