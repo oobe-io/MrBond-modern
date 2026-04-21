@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MrBond-modern: Web シミュレータ</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>MrBond-modern</h1>
+      <p class="subtitle">
+        Mr.Bond（九州工業大学製ボンドグラフ・シミュレータ）の TypeScript 実装。
+        オリジナルと<strong>バイト完全一致</strong>の CSV 出力を、ブラウザだけで実行。
+      </p>
+    </header>
+
+    <main>
+      <section id="controls">
+        <h2>モデル</h2>
+        <div class="model-info">
+          <p><strong>バネ-マス-ダンパ</strong>（サンプル）</p>
+          <ul id="param-list"></ul>
+        </div>
+        <button id="run-btn">計算実行</button>
+        <p id="status" class="status"></p>
+      </section>
+
+      <section id="topology">
+        <h2>ボンドグラフ構造</h2>
+        <div id="graph-info"></div>
+      </section>
+
+      <section id="plot">
+        <h2>シミュレーション結果</h2>
+        <div id="plot-container"></div>
+      </section>
+    </main>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
