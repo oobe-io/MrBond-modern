@@ -7,7 +7,9 @@
   "scripts": {
     "test": "tsx --test tests/**/*.test.ts",
     "solver-check": "tsx tests/solver-analytical.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sim": "tsx src/cli/runSim.ts",
+    "verify": "tsx src/cli/verify.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
