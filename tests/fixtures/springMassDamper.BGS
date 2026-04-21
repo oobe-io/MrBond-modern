@@ -1,0 +1,36 @@
+BOND SYMBOL EXPR OUT DEFIN PARM INIT
+SE1    1
+OJ     3     2     -1    4
+II1    2
+ZJ     8     5     -3
+ZJ     7     -4    6
+CI1    5
+RE1    6
+OJ     9     -8    -7
+SF1    9
+/
+BC: DP2   DP2
+/
+SE1
+PA: EIN    10.0                                               
+E=EIN;
+EOD
+II1
+PA: M      10.0                                               
+L=Z/M;
+EOD
+CI1
+PA: PK     100.0                                              
+C=PK*Z;
+EOD
+RE1
+PA: PCF    10                                                 
+R=PCF*Z;
+EOD
+SF1
+PA: PF     0.0                                                
+F=PF;
+EOD
+/
+ 0.00000E+00        1.00000E+01        1.00000E-05     1000
+/

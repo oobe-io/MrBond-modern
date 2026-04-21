@@ -25,6 +25,8 @@
 export interface ParFile {
   /** PA[index] = value */
   readonly pa: ReadonlyMap<number, number>;
+  /** PA の名前情報（あれば） index → name */
+  readonly paNames: ReadonlyMap<number, string>;
   /** 状態変数初期値 X[index0-based] = value */
   readonly stateInit: ReadonlyMap<number, number>;
   /** 出力ラベル LA: index → name */
@@ -72,8 +74,21 @@ function parseIntStrict(text: string): number {
   return Number.parseInt(trimmed, 10);
 }
 
+/**
+ * 行の先頭から最初の数値トークンだけ取り出して返す。末尾に人間用コメント
+ * (例: "NS       2               NUMBER OF STATE VARIABLES") が入っても動く。
+ */
+function firstIntToken(text: string): number {
+  const match = text.trim().match(/^-?\d+/);
+  if (!match) {
+    throw new Error(`no integer found in "${text}"`);
+  }
+  return Number.parseInt(match[0], 10);
+}
+
 export function parsePar(source: string): ParFile {
   const pa = new Map<number, number>();
+  const paNames = new Map<number, string>();
   const stateInit = new Map<number, number>();
   const labels = new Map<number, string>();
   const stateSymbols = new Map<number, string>();
@@ -98,6 +113,8 @@ export function parsePar(source: string): ParFile {
     try {
       switch (type) {
         case 'PA': {
+          // 実ファイル例: "PA   1   1.000000e+001 EIN   "
+          //   → 番号, 値, 名前（オプション）
           const parts = rest.trim().split(/\s+/);
           if (parts.length < 2) {
             throw new Error('PA record requires index and value');
@@ -105,6 +122,9 @@ export function parsePar(source: string): ParFile {
           const idx = parseIntStrict(parts[0]!);
           const val = parseFortranDouble(parts[1]!);
           pa.set(idx, val);
+          if (parts.length >= 3 && parts[2]!.length > 0) {
+            paNames.set(idx, parts[2]!);
+          }
           break;
         }
         case 'ST': {
@@ -133,19 +153,19 @@ export function parsePar(source: string): ParFile {
           break;
         }
         case 'NS':
-          NS = parseIntStrict(rest);
+          NS = firstIntToken(rest);
           break;
         case 'IN':
-          ING = parseIntStrict(rest);
+          ING = firstIntToken(rest);
           break;
         case 'ND':
-          ND = parseIntStrict(rest);
+          ND = firstIntToken(rest);
           break;
         case 'NO':
-          NOT = parseIntStrict(rest);
+          NOT = firstIntToken(rest);
           break;
         case 'OP':
-          NOUT = parseIntStrict(rest);
+          NOUT = firstIntToken(rest);
           break;
         case 'PT': {
           const parts = rest.trim().split(/\s+/);
@@ -182,6 +202,7 @@ export function parsePar(source: string): ParFile {
 
   return {
     pa,
+    paNames,
     stateInit,
     labels,
     stateSymbols,
