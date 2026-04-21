@@ -17,7 +17,11 @@ const FIXTURES = {
   par: `${FIXTURE_BASE}springMassDamper.PAR`,
   c: `${FIXTURE_BASE}springMassDamper.model.c`,
   bgs: `${FIXTURE_BASE}springMassDamper.BGS`,
+  expected: `${FIXTURE_BASE}springMassDamper.expected.csv`,
 };
+
+/** 計算実行結果を保持するセッション状態 */
+let lastCsv: string | null = null;
 
 async function fetchText(url: string): Promise<string> {
   const res = await fetch(url);
@@ -30,6 +34,9 @@ async function init(): Promise<void> {
   const paramList = document.getElementById('param-list')!;
   const graphInfo = document.getElementById('graph-info')!;
   const runBtn = document.getElementById('run-btn') as HTMLButtonElement;
+  const verifyBtn = document.getElementById('verify-btn') as HTMLButtonElement;
+  const downloadBtn = document.getElementById('download-btn') as HTMLButtonElement;
+  const verifyResult = document.getElementById('verify-result')!;
 
   try {
     status.textContent = 'モデル読み込み中…';
@@ -71,6 +78,11 @@ async function init(): Promise<void> {
         const result = runSimulation({ par, func, dout });
         const elapsed = performance.now() - t0;
 
+        lastCsv = result.csv;
+        verifyBtn.disabled = false;
+        downloadBtn.disabled = false;
+        verifyResult.style.display = 'none';
+
         status.textContent = `完了: ${result.rowCount} 行生成 (${elapsed.toFixed(0)} ms)、最終時刻 t=${result.finalTime.toFixed(5)}s`;
         status.className = 'status success';
 
@@ -81,6 +93,53 @@ async function init(): Promise<void> {
       } finally {
         runBtn.disabled = false;
       }
+    });
+
+    verifyBtn.addEventListener('click', async () => {
+      if (!lastCsv) return;
+      verifyBtn.disabled = true;
+      verifyResult.style.display = 'none';
+      try {
+        const expected = (await fetchText(FIXTURES.expected)).replace(/\r\n/g, '\n');
+        const refLines = expected.trimEnd().split('\n');
+        const actualLines = lastCsv.trimEnd().split('\n');
+        if (refLines.length !== actualLines.length) {
+          verifyResult.className = 'mismatch';
+          verifyResult.textContent = `✘ 行数不一致: ref=${refLines.length}, ours=${actualLines.length}`;
+          return;
+        }
+        let diffs = 0;
+        let firstDiff = -1;
+        for (let i = 0; i < refLines.length; i++) {
+          if (refLines[i] !== actualLines[i]) {
+            diffs++;
+            if (firstDiff === -1) firstDiff = i;
+          }
+        }
+        if (diffs === 0) {
+          verifyResult.className = 'match';
+          verifyResult.innerHTML = `✓ <strong>${refLines.length}/${refLines.length}</strong> 行バイト完全一致<br/>Mr.Bond オリジナルと数値的に同一の出力です`;
+        } else {
+          verifyResult.className = 'mismatch';
+          verifyResult.textContent = `✘ ${diffs}/${refLines.length} 行に差異（最初の差異は行 ${firstDiff}）`;
+        }
+      } catch (err) {
+        verifyResult.className = 'mismatch';
+        verifyResult.textContent = `検証エラー: ${(err as Error).message}`;
+      } finally {
+        verifyBtn.disabled = false;
+      }
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      if (!lastCsv) return;
+      const blob = new Blob([lastCsv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'simulation.csv';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
   } catch (err) {
     status.textContent = `初期化失敗: ${(err as Error).message}`;
