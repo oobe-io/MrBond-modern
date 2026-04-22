@@ -66,10 +66,10 @@ async function main(): Promise<void> {
   ]);
 
   const par = parsePar(parSrc);
-  const { func, dout } = buildFuncAndDout(cSrc, par.pa);
+  const { func, dout, fu } = buildFuncAndDout(cSrc, par.pa);
 
   const t0 = performance.now();
-  const result = runSimulation({ par, func, dout });
+  const result = runSimulation({ par, func, dout, fu });
   const elapsedMs = performance.now() - t0;
 
   if (args.outPath) {

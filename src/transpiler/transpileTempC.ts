@@ -137,11 +137,14 @@ function toPaArray(pa: ReadonlyMap<number, number>): number[] {
   return arr;
 }
 
-/** メインエントリポイント: temp.c ソースから DerivFn/DoutFn を構築 */
+/** FU 関数シグネチャ（Runge.f の FU に対応）: (i, t, x) → 制約方程式の残差 */
+export type FuFn = (i: number, t: number, x: number[]) => number;
+
+/** メインエントリポイント: temp.c ソースから DerivFn/DoutFn/FuFn を構築 */
 export function buildFuncAndDout(
   source: string,
   pa: ReadonlyMap<number, number>,
-): { func: DerivFn; dout: DoutFn } {
+): { func: DerivFn; dout: DoutFn; fu: FuFn } {
   const tokens = tokenizeC(source);
   const program = parseC(tokens);
 
@@ -182,6 +185,10 @@ export function buildFuncAndDout(
   const funcBodyJs = funcDef.body.map((s) => transpiler.emitStmt(s)).join('\n');
   const doutBodyJs = doutDef.body.map((s) => transpiler.emitStmt(s)).join('\n');
 
+  // FU（制約方程式残差）関数。存在しなければ常に 0 を返すデフォルト。
+  const fuDef = funcs.get('FU');
+  const fuBodyJs = fuDef ? fuDef.body.map((s) => transpiler.emitStmt(s)).join('\n') : 'return 0;';
+
   // すべてを内包する1つの JS ソースを構築。PA/X/DX/OP/T はクロージャ or 引数。
   // - PA: クロージャキャプチャ（buildFuncAndDout の引数から）
   // - FUNC の引数: (T, X, DX, N)
@@ -220,8 +227,14 @@ export function buildFuncAndDout(
     `  X = x_; OP = op_;`,
     doutBodyJs,
     `}`,
-    // 両方を返す
-    `return { __FUNC__, __DOUT__ };`,
+    // FU: 制約方程式残差。SOLV が反復的に収束させる用。
+    // 署名: (I, T, X[]) → double。Mr.Bond の規約で I は 1-based の residual index。
+    `function __FU__(I, t_, x_) {`,
+    `  T = t_; X = x_;`,
+    fuBodyJs,
+    `}`,
+    // 3つ返す
+    `return { __FUNC__, __DOUT__, __FU__ };`,
   ].join('\n');
 
   const PA = toPaArray(pa);
@@ -233,6 +246,7 @@ export function buildFuncAndDout(
   ) => {
     __FUNC__: (t: number, xProbe: number[], dx: number[], n: number, xGlobal: number[]) => void;
     __DOUT__: (x: number[], op: number[]) => void;
+    __FU__: (i: number, t: number, x: number[]) => number;
   };
 
   const compiled = combinedFactory(PA);
@@ -247,7 +261,10 @@ export function buildFuncAndDout(
     compiled.__DOUT__(x as number[], op);
   };
 
-  return { func, dout };
+  // 生の FU 関数もエクスポート（SOLV 構築用）
+  const fu = (i: number, t: number, x: number[]): number => compiled.__FU__(i, t, x);
+
+  return { func, dout, fu };
 }
 
 /** デバッグ用: コンパイルしたJSソースを文字列として取得 */

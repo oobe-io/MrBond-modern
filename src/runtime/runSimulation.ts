@@ -18,7 +18,7 @@
  * ファイル I/O は呼び出し側の責任。
  */
 
-import { rungeKuttaGillStep, type DerivFn, type ConstraintFn } from '../solver/rungeKuttaGill.ts';
+import { rungeKuttaGillStep, buildSolv, type DerivFn, type ConstraintFn } from '../solver/rungeKuttaGill.ts';
 import { formatCsv } from '../output/csvWriter.ts';
 import type { ParFile } from '../parser/parFile.ts';
 
@@ -29,6 +29,11 @@ export interface RunOptions {
   readonly func: DerivFn;
   readonly dout: DoutFn;
   readonly solv?: ConstraintFn;
+  /**
+   * FU 関数（制約方程式残差）。par.ND > 0 のとき solv を自動構築するのに使う。
+   * solv が直接指定されていればそちらを優先。
+   */
+  readonly fu?: (i: number, t: number, x: number[]) => number;
   /** 出力ラベル（PAR.labels が空の時のフォールバック） */
   readonly fallbackLabels?: readonly string[];
 }
@@ -50,7 +55,9 @@ export interface RunResult {
  *   ステップ毎に count をインクリメント、count === conum で出力
  */
 export function runSimulation(options: RunOptions): RunResult {
-  const { par, func, dout, solv, fallbackLabels } = options;
+  const { par, func, dout, fallbackLabels } = options;
+  // SOLV 解決: 明示指定 > FU+ND自動構築 > noop
+  const solv = options.solv ?? (options.fu && par.ND > 0 ? buildSolv(options.fu, par.ND) : undefined);
   const totalStates = par.NS + par.ING;
   const x: number[] = new Array(totalStates).fill(0);
   // 初期値適用（ST レコード）

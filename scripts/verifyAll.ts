@@ -113,9 +113,9 @@ async function verifyOne(fixturesRoot: string, modelName: string, rungeSrc: stri
     // TS 実行（タイムアウト付き）
     const tsStart = performance.now();
     const par = parsePar(parSrc);
-    const { func, dout } = buildFuncAndDout(cSrc, par.pa);
+    const { func, dout, fu } = buildFuncAndDout(cSrc, par.pa);
     const tsRunResult = await Promise.race([
-      Promise.resolve().then(() => runSimulation({ par, func, dout })),
+      Promise.resolve().then(() => runSimulation({ par, func, dout, fu })),
       new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), 300000)),
     ]);
     if (tsRunResult === 'timeout') {

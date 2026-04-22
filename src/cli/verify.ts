@@ -129,8 +129,8 @@ async function main(): Promise<void> {
     console.error('[3/3] Running TypeScript simulator...');
     const tsT0 = performance.now();
     const par = parsePar(parSrc);
-    const { func, dout } = buildFuncAndDout(userC, par.pa);
-    const tsResult = runSimulation({ par, func, dout });
+    const { func, dout, fu } = buildFuncAndDout(userC, par.pa);
+    const tsResult = runSimulation({ par, func, dout, fu });
     console.error(
       `      OK (${(performance.now() - tsT0).toFixed(0)}ms), ${tsResult.rowCount} rows`,
     );

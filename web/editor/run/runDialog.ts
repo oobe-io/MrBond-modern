@@ -226,8 +226,8 @@ export function openRunDialog(store: Store): void {
           return;
         }
         const par = parsePar(parSrc);
-        const { func, dout } = buildFuncAndDout(cSrc, par.pa);
-        result = runSimulation({ par, func, dout });
+        const { func, dout, fu } = buildFuncAndDout(cSrc, par.pa);
+        result = runSimulation({ par, func, dout, fu });
         const elapsed = performance.now() - t0;
         lastCsv = result.csv;
         downloadBtn.disabled = false;
