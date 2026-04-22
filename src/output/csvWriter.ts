@@ -29,12 +29,17 @@ export function formatExponential(value: number, precision = 6): string {
   }
   // JavaScript の toExponential は指数が1桁でもそのまま返す ("1.000000e-5" 等)
   // C は常に2桁以上のゼロ埋め "1.000000e-05" なので補正する
+  // また JS は負ゼロの符号を落とすが、C printf("%e") は "-0.000000e+00" と出すので保存する
   const jsFormat = value.toExponential(precision);
   const match = /^(-?\d+\.\d+)e([+-])(\d+)$/.exec(jsFormat);
   if (!match) {
     throw new Error(`unexpected exponential format: ${jsFormat}`);
   }
-  const [, mantissa, sign, expDigits] = match;
+  let [, mantissa, sign, expDigits] = match;
+  // 負ゼロの補正: JS toExponential は -0 を "0.000000e+0" にしてしまう
+  if (value === 0 && Object.is(value, -0) && !mantissa!.startsWith('-')) {
+    mantissa = `-${mantissa}`;
+  }
   const paddedExp = expDigits!.length === 1 ? `0${expDigits}` : expDigits;
   return `${mantissa}e${sign}${paddedExp}`;
 }

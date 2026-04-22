@@ -185,11 +185,17 @@ async function main(): Promise<void> {
   const dirs = (await readdir(fixturesRoot)).sort();
   console.error(`Found ${dirs.length} model directories\n`);
 
-  // Runge.c を一度読み込んで共有（windows.h 削除版を各 verify で使う）
-  const rungeSrc = (await readFile(RUNGE_C, 'utf8')).replace(
-    '#include<windows.h>',
-    '/* windows.h removed */',
-  );
+  // Runge.c を一度読み込んで共有。非Windows ビルド用に以下の変換を適用:
+  //   1. #include<windows.h> 削除（未使用のため）
+  //   2. 既知のバッファオーバーフロー修正: PT[4] 配列に対する 300要素初期化ループ
+  //      が原作に存在し、Windows/bcc32 は寛容だが ARM64 Mac は stack canary で
+  //      検知して SIGKILL する。範囲を配列サイズに合わせる。
+  const rungeSrc = (await readFile(RUNGE_C, 'utf8'))
+    .replace('#include<windows.h>', '/* windows.h removed */')
+    .replace(
+      'for(i=0;i<=299;i++)PT[i]=0.0;',
+      '/* buffer overflow fixed: PT has only 4 elements */ for(i=0;i<=3;i++)PT[i]=0.0;',
+    );
 
   const results: Result[] = [];
   for (const model of dirs) {
