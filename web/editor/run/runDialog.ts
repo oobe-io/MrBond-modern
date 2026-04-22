@@ -19,6 +19,7 @@ import type { Store } from '../shared/store.ts';
 import { parsePar } from '../../../src/parser/parFile.ts';
 import { buildFuncAndDout } from '../../../src/transpiler/transpileTempC.ts';
 import { runSimulation } from '../../../src/runtime/runSimulation.ts';
+import { deriveFromGraph, DeriveError } from '../derive/autoDerive.ts';
 
 const STYLE_ID = 'mrbond-run-style';
 
@@ -74,6 +75,15 @@ const STYLE_CSS = `
 }
 .mrbond-run-card footer button:disabled { opacity: 0.5; cursor: not-allowed; }
 .mrbond-run-card footer button:hover:not(:disabled) { opacity: 0.85; }
+
+.mrbond-run-body .mode-btn {
+  background: transparent; color: #6ee7b7; border: 1px solid #6ee7b7;
+  padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer;
+  font-family: inherit; font-size: 0.8rem;
+}
+.mrbond-run-body .mode-btn.primary {
+  background: #6ee7b7; color: #0a0e14; font-weight: 600;
+}
 `;
 
 function injectStyle(): void {
@@ -84,7 +94,7 @@ function injectStyle(): void {
   document.head.appendChild(style);
 }
 
-export function openRunDialog(_store: Store): void {
+export function openRunDialog(store: Store): void {
   injectStyle();
 
   const overlay = document.createElement('div');
@@ -108,35 +118,30 @@ export function openRunDialog(_store: Store): void {
 
   card.innerHTML = `
     <header>
-      <h2>シミュレーション実行（Mr.Bond 互換）</h2>
+      <h2>シミュレーション実行</h2>
       <button class="close" title="閉じる">×</button>
     </header>
     <div class="mrbond-run-body">
       <div class="hint">
-        現在の自動導出機能は開発中。Mr.Bond で同じグラフを開いて生成された
-        <code>temp.c</code> と <code>temp.PAR</code> をペーストして既存のソルバで実行する。
+        <strong>描画グラフから自動導出</strong>：描いた要素とボンドから FUNC/DOUT を自動生成して実行（対応: Se/Sf/I/C/R + 1/0接合点、単純トポロジのみ）。<br>
+        <strong>Mr.Bond 互換</strong>：Mr.Bond が生成した temp.c / temp.PAR を貼り付けて実行。
       </div>
       <div class="field">
-        <label for="par-input">temp.PAR（シミュレーション設定 + パラメータ）</label>
-        <textarea id="par-input" placeholder="PA   1   1.000000e+001 EIN
-NS       2
-IN       1
-ND       0
-PT  1   0.000000e+000
-PT  2   1.000000e+001
-PT  3   1.000000e-005
-NO         1000
-OP         1
-END"></textarea>
+        <label>モード選択</label>
+        <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem;">
+          <button class="mode-btn primary" data-mode="auto">描画グラフから自動導出</button>
+          <button class="mode-btn" data-mode="paste">temp.c/PAR 手動貼り付け</button>
+        </div>
       </div>
-      <div class="field">
-        <label for="c-input">temp.c（Mr.Bond 生成の C コード）</label>
-        <textarea id="c-input" placeholder="#include<stdio.h>
-#include<math.h>
-...
-void FUNC(double T, double X[], int N) {
-  DX[0] = ...;
-}"></textarea>
+      <div id="paste-fields" style="display: none;">
+        <div class="field">
+          <label for="par-input">temp.PAR</label>
+          <textarea id="par-input"></textarea>
+        </div>
+        <div class="field">
+          <label for="c-input">temp.c</label>
+          <textarea id="c-input"></textarea>
+        </div>
       </div>
       <div class="field">
         <label>結果</label>
@@ -157,35 +162,76 @@ void FUNC(double T, double X[], int N) {
   const cancelBtn = card.querySelector<HTMLButtonElement>('.cancel-btn')!;
   const downloadBtn = card.querySelector<HTMLButtonElement>('.download-btn')!;
   const closeBtn = card.querySelector<HTMLButtonElement>('.close')!;
+  const pasteFields = card.querySelector<HTMLDivElement>('#paste-fields')!;
+  const modeButtons = card.querySelectorAll<HTMLButtonElement>('.mode-btn');
 
   let lastCsv: string | null = null;
+  let mode: 'auto' | 'paste' = 'auto';
+
+  const setMode = (m: 'auto' | 'paste'): void => {
+    mode = m;
+    modeButtons.forEach((btn) => {
+      btn.classList.toggle('primary', btn.dataset.mode === m);
+    });
+    pasteFields.style.display = m === 'paste' ? 'block' : 'none';
+  };
+
+  modeButtons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setMode(btn.dataset.mode as 'auto' | 'paste');
+    });
+  });
 
   closeBtn.addEventListener('click', close);
   cancelBtn.addEventListener('click', close);
 
   runBtn.addEventListener('click', () => {
-    const parSrc = parInput.value.trim();
-    const cSrc = cInput.value.trim();
-    if (!parSrc || !cSrc) {
-      resultBox.className = 'result-box error';
-      resultBox.textContent = '両方のフィールドに値を入れてください。';
-      return;
-    }
     try {
       const t0 = performance.now();
-      const par = parsePar(parSrc);
-      const { func, dout } = buildFuncAndDout(cSrc, par.pa);
-      const result = runSimulation({ par, func, dout });
-      const elapsed = performance.now() - t0;
-
-      lastCsv = result.csv;
-      downloadBtn.disabled = false;
-      resultBox.className = 'result-box success';
-      const previewHead = result.csv.split('\n').slice(0, 5).join('\n');
-      resultBox.textContent = `✓ ${result.rowCount} 行生成 (${elapsed.toFixed(0)}ms)、最終時刻 t=${result.finalTime.toFixed(5)}s\n\n${previewHead}\n...`;
+      let result;
+      if (mode === 'auto') {
+        const doc = store.getState().doc;
+        if (doc.elements.length === 0) {
+          resultBox.className = 'result-box error';
+          resultBox.textContent = 'グラフが空です。要素を配置してから実行してください。';
+          return;
+        }
+        if (doc.outputs.length === 0) {
+          resultBox.className = 'result-box error';
+          resultBox.textContent = '出力変数が設定されていません。\ndoc.outputs に少なくとも 1 つ追加してください（現状 UI 未実装：手動で JSON 編集 or パラメータダイアログ経由で）。';
+          return;
+        }
+        const derived = deriveFromGraph(doc);
+        const simResult = runSimulation({ par: derived.par, func: derived.func, dout: derived.dout });
+        result = simResult;
+        const elapsed = performance.now() - t0;
+        lastCsv = simResult.csv;
+        downloadBtn.disabled = false;
+        resultBox.className = 'result-box success';
+        const previewHead = simResult.csv.split('\n').slice(0, 5).join('\n');
+        resultBox.textContent = `✓ 自動導出成功\n状態変数: ${derived.stateLabels.join(', ')}\n出力: ${derived.outputLabels.join(', ')}\n${simResult.rowCount} 行生成 (${elapsed.toFixed(0)}ms)\n\n${previewHead}\n...`;
+      } else {
+        const parSrc = parInput.value.trim();
+        const cSrc = cInput.value.trim();
+        if (!parSrc || !cSrc) {
+          resultBox.className = 'result-box error';
+          resultBox.textContent = '両方のフィールドに値を入れてください。';
+          return;
+        }
+        const par = parsePar(parSrc);
+        const { func, dout } = buildFuncAndDout(cSrc, par.pa);
+        result = runSimulation({ par, func, dout });
+        const elapsed = performance.now() - t0;
+        lastCsv = result.csv;
+        downloadBtn.disabled = false;
+        resultBox.className = 'result-box success';
+        const previewHead = result.csv.split('\n').slice(0, 5).join('\n');
+        resultBox.textContent = `✓ ${result.rowCount} 行生成 (${elapsed.toFixed(0)}ms)、最終時刻 t=${result.finalTime.toFixed(5)}s\n\n${previewHead}\n...`;
+      }
     } catch (err) {
       resultBox.className = 'result-box error';
-      resultBox.textContent = `✘ エラー:\n${(err as Error).message}`;
+      const prefix = err instanceof DeriveError ? '✘ 導出エラー:\n' : '✘ エラー:\n';
+      resultBox.textContent = `${prefix}${(err as Error).message}`;
       downloadBtn.disabled = true;
       lastCsv = null;
     }
@@ -203,7 +249,6 @@ void FUNC(double T, double X[], int N) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
 
+  setMode('auto');
   document.body.appendChild(overlay);
-  // 初期フォーカス
-  parInput.focus();
 }
