@@ -231,7 +231,7 @@ export function buildFuncAndDout(
   const combinedFactory = new Function('PA', combinedSource) as (
     pa: number[],
   ) => {
-    __FUNC__: (t: number, x: number[], dx: number[], n: number) => void;
+    __FUNC__: (t: number, xProbe: number[], dx: number[], n: number, xGlobal: number[]) => void;
     __DOUT__: (x: number[], op: number[]) => void;
   };
 

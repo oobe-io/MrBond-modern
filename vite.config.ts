@@ -21,5 +21,11 @@ export default defineConfig({
   build: {
     outDir: '../dist-web',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: 'web/index.html',
+        editor: 'web/editor.html',
+      },
+    },
   },
 });
