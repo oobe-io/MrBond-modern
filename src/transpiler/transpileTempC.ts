@@ -146,11 +146,25 @@ export function buildFuncAndDout(
   const program = parseC(tokens);
 
   const funcs = new Map<string, FuncDef>();
+  // ユーザー宣言のグローバル変数（POS, Xfd, sfd2 など）。
+  // Mr.Bond が temp.c の FUNC/DOUT/要素関数間で共有される中間変数として出力する。
+  // temp.c が既定で宣言する X, DX, OP, PA, T, H, DSIGN, FU 等の「インフラ変数」は除外。
+  const globalVars: string[] = [];
+  const INFRA_GLOBALS = new Set(['X', 'DX', 'OP', 'PA', 'T', 'H']);
   for (const decl of program.decls) {
-    if (decl.kind === 'funcDef') funcs.set(decl.name, decl);
+    if (decl.kind === 'funcDef') {
+      funcs.set(decl.name, decl);
+    } else if (decl.kind === 'varDecl' && !decl.isArray) {
+      if (!INFRA_GLOBALS.has(decl.name)) {
+        globalVars.push(decl.name);
+      }
+    }
   }
 
   const transpiler = new Transpiler();
+
+  // グローバル変数の宣言（関数群の直前、クロージャスコープ内に置く）
+  const globalDecls: string[] = globalVars.map((v) => `let ${v} = 0;`);
 
   // 要素関数の JS 宣言を集める
   const elementDecls: string[] = [];
@@ -172,35 +186,65 @@ export function buildFuncAndDout(
   // - PA: クロージャキャプチャ（buildFuncAndDout の引数から）
   // - FUNC の引数: (T, X, DX, N)
   // - DOUT の引数: (X, OP)
-  const funcSource = [
+  // FUNC と DOUT で「同じ要素関数・同じグローバル変数・同じ X/DX/OP」を共有する必要がある。
+  // 例: FUNC 内で R2(J, Z) が X[6] を参照、E2() 内で POS/Xfd/sfd* の値を書き換え、
+  //     次の DOUT 呼び出しでその副作用が見える必要がある。
+  // そのため **FUNC と DOUT は同一クロージャ内で構築** し、共有 let 変数を介して連携する。
+  // Mr.Bond のC生成コードは以下のセマンティクスを持つ:
+  //   - FUNC 内の `X[i]` 直接参照は**関数パラメータ X**（RK 試算点）を指す
+  //   - 要素関数内の `X[i]` 参照は**グローバル X**（積分対象の状態）を指す
+  //   - 一部の要素関数（valve 型のクランプ）はグローバル X を書き換え、
+  //     その副作用は同じ RK ステップの後続ステージに伝播する
+  // これを再現するため、クロージャ `X` をグローバル状態として保持し、
+  // FUNC 本体では同名の LOCAL const `X` を試算点パラメータから束縛してシャドウする。
+  const combinedSource = [
+    // クロージャ共有のステート（X = グローバル状態、要素関数はこちらを参照）
+    'let X = null, DX = null, OP = null, T = 0;',
+    // ユーザー定義のグローバル変数（要素間で状態共有される中間量）
+    ...globalDecls,
+    // 要素関数群（X/PA/グローバル変数をクロージャ経由で参照）
     ...elementDecls,
-    `function __FUNC__(T, X, DX, N) {\n${funcBodyJs}\n}`,
-    `return __FUNC__;`,
-  ].join('\n');
-
-  const doutSource = [
-    ...elementDecls,
-    `function __DOUT__(X, OP) {\n${doutBodyJs}\n}`,
-    `return __DOUT__;`,
+    // FUNC: state → derivs
+    //   xGlobal が与えられればクロージャ X はそれ、そうでなければ probe と同じ
+    //   FUNC 本体は IIFE で probe を local X として受ける（要素関数からの参照はクロージャに抜ける）
+    `function __FUNC__(t_, x_probe, dx_, n_, x_global) {`,
+    `  T = t_;`,
+    `  X = x_global !== undefined ? x_global : x_probe;`,
+    `  DX = dx_;`,
+    `  (function (X) {`,
+    funcBodyJs,
+    `  })(x_probe);`,
+    `}`,
+    // DOUT: 呼び出し時点のグローバル状態を X に設定（要素関数も同じ X を参照）
+    `function __DOUT__(x_, op_) {`,
+    `  X = x_; OP = op_;`,
+    doutBodyJs,
+    `}`,
+    // 両方を返す
+    `return { __FUNC__, __DOUT__ };`,
   ].join('\n');
 
   const PA = toPaArray(pa);
 
-  // 'PA' を引数として受け、そのクロージャで閉じた __FUNC__/__DOUT__ を返すファクトリを作る
+  // 'PA' を引数として受け、クロージャ内の __FUNC__/__DOUT__ を返すファクトリを作る
   // eslint-disable-next-line no-new-func
-  const funcFactory = new Function('PA', funcSource) as (pa: number[]) => (T: number, X: number[], DX: number[], N: number) => void;
-  // eslint-disable-next-line no-new-func
-  const doutFactory = new Function('PA', doutSource) as (pa: number[]) => (X: number[], OP: number[]) => void;
+  const combinedFactory = new Function('PA', combinedSource) as (
+    pa: number[],
+  ) => {
+    __FUNC__: (t: number, x: number[], dx: number[], n: number) => void;
+    __DOUT__: (x: number[], op: number[]) => void;
+  };
 
-  const compiledFunc = funcFactory(PA);
-  const compiledDout = doutFactory(PA);
+  const compiled = combinedFactory(PA);
 
-  const func: DerivFn = (t, x, dx) => {
-    compiledFunc(t, x as number[], dx, x.length);
+  const func: DerivFn = (t, xProbe, dx, xGlobal) => {
+    // xGlobal が与えられなかった場合（通常呼び出し）は probe 自身を global 扱い
+    const globalState = xGlobal ?? (xProbe as number[]);
+    compiled.__FUNC__(t, xProbe as number[], dx, xProbe.length, globalState);
   };
 
   const dout: DoutFn = (x, op) => {
-    compiledDout(x as number[], op);
+    compiled.__DOUT__(x as number[], op);
   };
 
   return { func, dout };

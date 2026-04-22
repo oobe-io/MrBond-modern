@@ -18,11 +18,20 @@ const CS2 = Math.sqrt(2.0);
 
 /**
  * 状態導関数の評価関数（Fortran版 FUNC に対応）
- * @param t  現在時刻
- * @param x  現在の状態ベクトル（読み取り専用で扱うこと）
- * @param dx 微分を書き込む出力バッファ（dx.length === x.length を前提）
+ *
+ * @param t        現在時刻
+ * @param xProbe   RKステージの試算点（FUNC 内 `X[i]` 直接参照はこれを指す）
+ * @param dx       微分を書き込む出力バッファ
+ * @param xGlobal  積分対象の「グローバル状態」配列。Mr.Bond 生成の一部要素関数
+ *                 （valve クランプ等）が書き換え、同じ RK ステップの後続ステージに
+ *                 副作用として伝播する。省略時は xProbe と同一視。
  */
-export type DerivFn = (t: number, x: readonly number[], dx: number[]) => void;
+export type DerivFn = (
+  t: number,
+  xProbe: readonly number[],
+  dx: number[],
+  xGlobal?: number[],
+) => void;
 
 /**
  * 制約方程式ソルバ（Fortran版 SOLV に対応）
@@ -71,9 +80,13 @@ export function rungeKuttaGillStep(
     x1[i] = x[i]!;
   }
 
+  // Mr.Bond 互換: func には RK 試算点 x1 と、積分対象の「グローバル状態」x の両方を渡す。
+  // 一部の要素関数（FD_valve の E3 クランプなど）は x を書き換え、その副作用は
+  // 続くステージの試算点再構成時に x 経由で反映される必要がある。
+
   // ---- Stage 1 ----
   solv(t, x1);
-  func(t, x1, dx);
+  func(t, x1, dx, x);
   for (let i = 0; i < n; i++) {
     x1[i] = x[i]! + 0.5 * h * dx[i]!;
     phi[i] = phi[i]! + dx[i]!;
@@ -83,7 +96,7 @@ export function rungeKuttaGillStep(
   // ---- Stage 2 ----
   t = t + 0.5 * h;
   solv(t, x1);
-  func(t, x1, dx);
+  func(t, x1, dx, x);
   for (let i = 0; i < n; i++) {
     x1[i] = x[i]! + (CS1 - 0.5) * h * k0[i]! + (1.0 - CS1) * h * dx[i]!;
     phi[i] = phi[i]! + (2.0 - CS2) * dx[i]!;
@@ -92,7 +105,7 @@ export function rungeKuttaGillStep(
 
   // ---- Stage 3 ----
   solv(t, x1);
-  func(t, x1, dx);
+  func(t, x1, dx, x);
   for (let i = 0; i < n; i++) {
     x1[i] = x[i]! - CS1 * h * k0[i]! + (1.0 + CS1) * h * dx[i]!;
     phi[i] = phi[i]! + (2.0 + CS2) * dx[i]!;
@@ -101,7 +114,7 @@ export function rungeKuttaGillStep(
   // ---- Stage 4 ----
   t = t + 0.5 * h;
   solv(t, x1);
-  func(t, x1, dx);
+  func(t, x1, dx, x);
   for (let i = 0; i < n; i++) {
     phi[i] = phi[i]! + dx[i]!;
     x[i] = x[i]! + (phi[i]! * h) / 6.0;
