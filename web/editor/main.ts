@@ -12,6 +12,7 @@ import { mountToolbar } from './toolbar/toolbar.ts';
 import { mountParameterDialog } from './dialog/parameterDialog.ts';
 import { mountIoButtons } from './io/saveLoad.ts';
 import { mountBgeExportButton } from './io/bgeWriter.ts';
+import { mountBgeImportButton } from './io/bgeReader2.ts';
 import { openRunDialog } from './run/runDialog.ts';
 import { openOutputDialog } from './output/outputDialog.ts';
 
@@ -30,6 +31,7 @@ mountCanvas(canvasRoot, store);
 mountParameterDialog(document.body, store);
 mountIoButtons(ioButtonsRoot, store);
 mountBgeExportButton(ioButtonsRoot, store);
+mountBgeImportButton(ioButtonsRoot, store);
 runBtn.addEventListener('click', () => openRunDialog(store));
 outputBtn.addEventListener('click', () => openOutputDialog(store));
 

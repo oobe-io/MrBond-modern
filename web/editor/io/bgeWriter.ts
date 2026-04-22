@@ -14,8 +14,7 @@
  *   4. シミュレーション設定: T0, T1, dt, NOT, 出力変数リスト
  *
  * 既知の制約（bgeWriter.test.md 参照）:
- * - Shift-JIS は ASCII 範囲のみサポート（TextEncoder が utf-8 固定のため）。
- *   日本語パラメータ名や説明文字列は非対応。
+ * - Shift-JIS は `encoding-japanese` 経由でフル対応（日本語パラメータ名もOK）。
  * - 座標/ポート causality 等は pragmatic 値で埋める（Mr.Bond 側での完全再現は目指さない）。
  * - `BgeReader` で再パースできる round-trip 保証が合格条件。
  *
@@ -31,6 +30,8 @@ import type {
   Element,
   ElementKind,
 } from '../shared/model.ts';
+// @ts-expect-error - encoding-japanese has no types, use any
+import Encoding from 'encoding-japanese';
 
 // ---- 要素タイプコード（実ファイル解析に基づく）----
 //
@@ -104,7 +105,7 @@ class BgeBuffer {
    * ASCII 範囲のみサポート。非 ASCII は '?' に置換。
    */
   writeLengthPrefixedString(text: string): void {
-    const bytes = asciiEncodeLossy(text);
+    const bytes = encodeShiftJis(text);
     const lenCode = pickLengthCode(bytes.length);
     this.writeAtom(lenCode, bytes.length);
     // BgeReader は長さアトム直後の 1 バイトスペースを消費してから length バイト読む。
@@ -144,16 +145,29 @@ function pickLengthCode(length: number): 2 | 3 | 4 | 5 {
 }
 
 /**
- * ASCII のみを書き出す lossy エンコーダ。
- * 非 ASCII は '?' に置換。将来 Shift-JIS 対応時の拡張ポイント。
+ * 文字列を Shift-JIS バイト列にエンコード。
+ *   - ASCII 範囲: そのまま 1 バイト
+ *   - 日本語（ひらがな/カタカナ/漢字）: encoding-japanese で Shift-JIS 2 バイト
+ *   - 変換不能文字は '?' に置換
  */
-function asciiEncodeLossy(text: string): Uint8Array {
-  const out = new Uint8Array(text.length);
+function encodeShiftJis(text: string): Uint8Array {
+  if (text === '') return new Uint8Array(0);
+  // 全部 ASCII なら高速パスで直書き
+  let allAscii = true;
   for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    out[i] = code <= 0x7f ? code : 0x3f;
+    if (text.charCodeAt(i) > 0x7f) { allAscii = false; break; }
   }
-  return out;
+  if (allAscii) {
+    const out = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i);
+    return out;
+  }
+  // 非 ASCII 含む: encoding-japanese で変換
+  // 型宣言がないのでキャスト。convert は number[] を返す。
+  const bytes: number[] = (Encoding as unknown as {
+    convert: (data: string, opts: { to: string; from: string; type: string; fallback?: string }) => number[];
+  }).convert(text, { to: 'SJIS', from: 'UNICODE', type: 'array', fallback: 'html-entity' });
+  return new Uint8Array(bytes);
 }
 
 // ---- ドキュメントシリアライズ ----
