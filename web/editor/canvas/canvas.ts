@@ -163,6 +163,12 @@ function render(
   const elementById = new Map<string, Element>();
   for (const el of elements) elementById.set(el.id, el);
 
+  // ボンド番号の抽出: "bond_7" → 7
+  const bondNumber = (bondId: string): string => {
+    const m = /_(\d+)$/.exec(bondId);
+    return m ? m[1]! : bondId;
+  };
+
   for (const b of bonds) {
     const from = elementById.get(b.fromElementId);
     const to = elementById.get(b.toElementId);
@@ -178,6 +184,36 @@ function render(
     line.setAttribute('marker-end', 'url(#halfarrow)');
     line.setAttribute('pointer-events', 'none');
     svg.appendChild(line);
+
+    // ボンド番号ラベル（Mr.Bond の慣例表記）。ボンド中点に小さく表示、
+    // 線に重ならないよう少しオフセットして配置
+    const midX = (x1 + x2) / 2;
+    const midY = (y1 + y2) / 2;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy);
+    // 法線方向に 10px オフセット
+    const offX = len > 1e-6 ? (-dy / len) * 10 : 0;
+    const offY = len > 1e-6 ? (dx / len) * 10 : 0;
+    const labelBg = document.createElementNS(SVG_NS, 'circle');
+    labelBg.setAttribute('cx', String(midX + offX));
+    labelBg.setAttribute('cy', String(midY + offY));
+    labelBg.setAttribute('r', '8');
+    labelBg.setAttribute('fill', '#0f1115');
+    labelBg.setAttribute('stroke', 'none');
+    labelBg.setAttribute('pointer-events', 'none');
+    svg.appendChild(labelBg);
+    const labelText = document.createElementNS(SVG_NS, 'text');
+    labelText.setAttribute('x', String(midX + offX));
+    labelText.setAttribute('y', String(midY + offY));
+    labelText.setAttribute('fill', '#9aa0a6');
+    labelText.setAttribute('font-size', '11');
+    labelText.setAttribute('font-weight', '500');
+    labelText.setAttribute('text-anchor', 'middle');
+    labelText.setAttribute('dominant-baseline', 'central');
+    labelText.setAttribute('pointer-events', 'none');
+    labelText.textContent = bondNumber(b.id);
+    svg.appendChild(labelText);
   }
 
   // ラバーバンド（描画中のボンド）
