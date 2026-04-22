@@ -52,38 +52,116 @@ export class DeriveError extends Error {
 interface EvalContext {
   z: number;
   paValues: Record<string, number>;
+  /** グローバル状態配列（要素の equation 内の X[i] 参照で使う） */
+  x: readonly number[];
 }
 
-function compileEquation(raw: string, knownParams: string[]): (ctx: EvalContext) => number {
-  // 形式: "<varname>=<expr>;" or just "<expr>"
-  let expr = raw.trim();
-  if (expr.endsWith(';')) expr = expr.slice(0, -1);
-  const eqMatch = /^[A-Za-z_]\w*\s*=\s*(.+)$/.exec(expr);
-  if (eqMatch) expr = eqMatch[1]!;
-  // 許可: 数字, 演算子, 関数（sin/cos/exp/log/sqrt/pow/fabs）, 識別子
-  // JS に渡す際は Z / paValues の参照に書き換える
-  const sanitized = expr.replace(/\bfabs\b/g, 'Math.abs')
-    .replace(/\bsin\b/g, 'Math.sin')
-    .replace(/\bcos\b/g, 'Math.cos')
-    .replace(/\bexp\b/g, 'Math.exp')
-    .replace(/\blog\b/g, 'Math.log')
-    .replace(/\bsqrt\b/g, 'Math.sqrt')
-    .replace(/\bpow\b/g, 'Math.pow');
+const MATH_SUBSTS: readonly [RegExp, string][] = [
+  [/\bfabs\b/g, 'Math.abs'],
+  [/\bsin\b/g, 'Math.sin'],
+  [/\bcos\b/g, 'Math.cos'],
+  [/\btan\b/g, 'Math.tan'],
+  [/\bexp\b/g, 'Math.exp'],
+  [/\blog\b/g, 'Math.log'],
+  [/\bsqrt\b/g, 'Math.sqrt'],
+  [/\bpow\b/g, 'Math.pow'],
+];
 
-  // 識別子 → `paValues["name"]` or `z`
-  // ただし Math.* は触らない
-  const replaced = sanitized.replace(/(?<![\w.])([A-Za-z_]\w*)(?![\w(])/g, (m) => {
-    if (m === 'Z') return 'z';
-    if (knownParams.includes(m)) return `paValues[${JSON.stringify(m)}]`;
-    return m;
+const RESERVED_WORDS = new Set([
+  'if', 'else', 'return', 'let', 'const', 'var', 'true', 'false',
+  'double', 'int', 'float', 'void',
+]);
+
+/**
+ * 式または複文ブロックをコンパイル。
+ *   - 単純式（"E=EIN;" や "C=PK*Z;"）は expression 経路
+ *   - `if` / `{` を含む場合は block 経路で new Function を構築
+ *     （if/else、ローカル変数宣言、配列アクセス X[i] を扱う）
+ *
+ * 制約:
+ *   - state 変数の書き換え（X[i] = ...）は副作用としては動くが、
+ *     RK の probe と global の差異は autoDerive では扱わない。
+ */
+function compileEquation(raw: string, knownParams: string[]): (ctx: EvalContext) => number {
+  const body = raw.trim();
+  const hasBlock = /\{/.test(body) || /\bif\b/.test(body);
+
+  if (!hasBlock) {
+    // 単純式: "<name>=<expr>;" or "<expr>"
+    let expr = body;
+    if (expr.endsWith(';')) expr = expr.slice(0, -1);
+    const eqMatch = /^[A-Za-z_]\w*\s*=\s*(.+)$/.exec(expr);
+    if (eqMatch) expr = eqMatch[1]!;
+    const jsExpr = translateToJs(expr, knownParams);
+    // eslint-disable-next-line no-new-func
+    const fn = new Function('z', 'paValues', 'X', `return (${jsExpr});`) as (
+      z: number, paValues: Record<string, number>, X: readonly number[],
+    ) => number;
+    return (ctx) => fn(ctx.z, ctx.paValues, ctx.x);
+  }
+
+  // ブロック経路: 先に「結果変数名」を特定する
+  //   典型: "if (...) { R = ...; } else { R = 0; }"
+  //   最初の "<name> =" の <name> を結果変数とする
+  const resultMatch = /\b([A-Za-z_]\w*)\s*=[^=]/.exec(body);
+  if (!resultMatch) {
+    throw new DeriveError(`ブロック式から結果変数を抽出できません: ${body}`);
+  }
+  const resultVar = resultMatch[1]!;
+
+  const jsBody = translateToJs(body, knownParams, { declareResultVar: resultVar });
+  const funcSource = `${jsBody}\nreturn ${resultVar};`;
+  // eslint-disable-next-line no-new-func
+  const fn = new Function('z', 'paValues', 'X', funcSource) as (
+    z: number, paValues: Record<string, number>, X: readonly number[],
+  ) => number;
+  return (ctx) => fn(ctx.z, ctx.paValues, ctx.x);
+}
+
+/**
+ * C 式/文を JS に翻訳する簡易変換。
+ *   - 数学関数 → Math.*
+ *   - 型宣言 (double/int/float) → let
+ *   - 識別子: Z → z, X → X (パラメータ、そのまま), paramName → paValues["paramName"]
+ *   - if/else/配列アクセスは元の構文を保つ（C と JS で互換）
+ */
+function translateToJs(
+  source: string,
+  knownParams: string[],
+  opts: { declareResultVar?: string } = {},
+): string {
+  let s = source;
+
+  // 型宣言 → let。"double X = 0;" → "let X = 0;", "double X;" → "let X = 0;"
+  s = s.replace(/\b(?:double|int|float)\s+(\w+)\s*;/g, 'let $1 = 0;');
+  s = s.replace(/\b(?:double|int|float)\s+/g, 'let ');
+
+  // 数学関数
+  for (const [re, js] of MATH_SUBSTS) {
+    s = s.replace(re, js);
+  }
+
+  // 識別子置換（word-boundary）。ただし配列アクセス `X[` や関数呼び出し `foo(` は除外
+  s = s.replace(/(?<![\w.])([A-Za-z_]\w*)(?![\w])/g, (match, name: string) => {
+    if (name === 'Z') return 'z';
+    if (name === 'X') return 'X'; // そのまま（配列）
+    if (RESERVED_WORDS.has(name)) return name;
+    if (knownParams.includes(name)) return `paValues[${JSON.stringify(name)}]`;
+    // ローカル変数はそのまま
+    return name;
   });
 
-  // eslint-disable-next-line no-new-func
-  const fn = new Function('z', 'paValues', `return (${replaced});`) as (
-    z: number,
-    paValues: Record<string, number>,
-  ) => number;
-  return (ctx) => fn(ctx.z, ctx.paValues);
+  // 結果変数を先頭で let 宣言
+  if (opts.declareResultVar) {
+    // すでに同じ名前が let 宣言されていないかチェック
+    const rv = opts.declareResultVar;
+    const hasLet = new RegExp(`\\blet\\s+${rv}\\b`).test(s);
+    if (!hasLet) {
+      s = `let ${rv} = 0;\n${s}`;
+    }
+  }
+
+  return s;
 }
 
 // ---- グラフ走査ヘルパ ----
@@ -149,14 +227,14 @@ export function deriveFromGraph(doc: BondGraphDoc): DerivedModel {
   //    I, C は状態依存の出力（Z = 状態値）。
   //    Se, Sf は定数。
   //    R は flow 入力に対する effort 出力（引数 Z = flow）。
+  //    TF/GY は 2-port 要素、equation でスケーリング比を返す（引数なし）。
   const elementFns = new Map<string, (ctx: EvalContext) => number>();
   for (const el of doc.elements) {
-    if (['Se', 'Sf', 'I', 'C', 'R'].includes(el.kind)) {
+    if (['Se', 'Sf', 'I', 'C', 'R', 'TF', 'GY'].includes(el.kind)) {
       const eq = el.equation?.trim();
       if (!eq) {
         // デフォルト式を要素タイプから推測
         if (el.kind === 'Se' || el.kind === 'Sf') {
-          // 1つ目のパラメータを定数として使う
           const pname = el.parameters[0]?.name;
           if (!pname) throw new DeriveError(`${el.label ?? el.id}: パラメータが設定されていません`);
           elementFns.set(el.id, (_ctx) => paValues[pname]!);
@@ -178,6 +256,13 @@ export function deriveFromGraph(doc: BondGraphDoc): DerivedModel {
           const pname = el.parameters[0]?.name;
           if (!pname) throw new DeriveError(`${el.label ?? el.id}: 抵抗パラメータが必要です`);
           elementFns.set(el.id, (ctx) => paValues[pname]! * ctx.z);
+          continue;
+        }
+        if (el.kind === 'TF' || el.kind === 'GY') {
+          // デフォルト: 第1パラメータを比として使う
+          const pname = el.parameters[0]?.name;
+          if (!pname) throw new DeriveError(`${el.label ?? el.id}: ${el.kind} の比パラメータが必要です`);
+          elementFns.set(el.id, (_ctx) => paValues[pname]!);
           continue;
         }
       } else {
@@ -354,13 +439,13 @@ export function deriveFromGraph(doc: BondGraphDoc): DerivedModel {
     const sourceEl = elMap.get(sourceElId)!;
     if (sourceEl.kind === 'Se') {
       const fn = elementFns.get(sourceElId)!;
-      return () => fn({ z: 0, paValues });
+      return (x) => fn({ z: 0, paValues, x });
     }
     if (sourceEl.kind === 'C') {
       const stateIdx = stateIndexOf.get(sourceElId);
       if (stateIdx === undefined) throw new DeriveError(`C state not indexed: ${sourceElId}`);
       const fn = elementFns.get(sourceElId)!;
-      return (x) => fn({ z: x[stateIdx]!, paValues });
+      return (x) => fn({ z: x[stateIdx]!, paValues, x });
     }
     if (sourceEl.kind === 'I') {
       throw new DeriveError(`effort not available from I element ${sourceElId} at bond ${bond.id}`);
@@ -369,7 +454,32 @@ export function deriveFromGraph(doc: BondGraphDoc): DerivedModel {
       // R: effort = R_param * flow。flow を同じボンド経由で取得
       const flowComputer = flowFromBondToElement(bond, sourceElId);
       const fn = elementFns.get(sourceElId)!;
-      return (x) => fn({ z: flowComputer(x), paValues });
+      return (x) => fn({ z: flowComputer(x), paValues, x });
+    }
+    if (sourceEl.kind === 'TF') {
+      // TF: 2-port。effort は他ポートの effort * ratio
+      // 方向: from-port の effort = ratio * to-port の effort（ratio はユーザ式）
+      const otherBonds = bondsOfElement(doc, sourceElId).filter((b) => b.id !== bond.id);
+      if (otherBonds.length !== 1) {
+        throw new DeriveError(`TF ${sourceElId}: 2本のbondが必要（現在 ${otherBonds.length + 1}）`);
+      }
+      const otherBond = otherBonds[0]!;
+      const otherEffortComputer = effortFromBondToElement(otherBond, sourceElId);
+      const ratioFn = elementFns.get(sourceElId)!;
+      // ratio の向き: bond.from が TF（sourceElId == from）→ ratio 反転? 簡略化してそのまま倍率
+      // ユーザが from/to を逆にしたければ式側で調整
+      return (x) => ratioFn({ z: 0, paValues, x }) * otherEffortComputer(x);
+    }
+    if (sourceEl.kind === 'GY') {
+      // GY: 2-port クロス結合。effort_1 = r * flow_2
+      const otherBonds = bondsOfElement(doc, sourceElId).filter((b) => b.id !== bond.id);
+      if (otherBonds.length !== 1) {
+        throw new DeriveError(`GY ${sourceElId}: 2本のbondが必要`);
+      }
+      const otherBond = otherBonds[0]!;
+      const otherFlowComputer = flowFromBondToElement(otherBond, sourceElId);
+      const ratioFn = elementFns.get(sourceElId)!;
+      return (x) => ratioFn({ z: 0, paValues, x }) * otherFlowComputer(x);
     }
     if (sourceEl.kind === 'OneJunction') {
       // 1-junction の制約: Σ(sign_i * e_i) = 0
@@ -411,19 +521,41 @@ export function deriveFromGraph(doc: BondGraphDoc): DerivedModel {
     const sourceEl = elMap.get(sourceElId)!;
     if (sourceEl.kind === 'Sf') {
       const fn = elementFns.get(sourceElId)!;
-      return () => fn({ z: 0, paValues });
+      return (x) => fn({ z: 0, paValues, x });
     }
     if (sourceEl.kind === 'I') {
       const stateIdx = stateIndexOf.get(sourceElId);
       if (stateIdx === undefined) throw new DeriveError(`I state not indexed: ${sourceElId}`);
       const fn = elementFns.get(sourceElId)!;
-      return (x) => fn({ z: x[stateIdx]!, paValues });
+      return (x) => fn({ z: x[stateIdx]!, paValues, x });
     }
     if (sourceEl.kind === 'C') {
       throw new DeriveError(`flow not available from C element ${sourceElId}`);
     }
     if (sourceEl.kind === 'R') {
       throw new DeriveError(`R element ${sourceElId} の inverse causality は未対応`);
+    }
+    if (sourceEl.kind === 'TF') {
+      // TF: flow_1 = flow_2 / ratio
+      const otherBonds = bondsOfElement(doc, sourceElId).filter((b) => b.id !== bond.id);
+      if (otherBonds.length !== 1) {
+        throw new DeriveError(`TF ${sourceElId}: 2本のbondが必要`);
+      }
+      const otherBond = otherBonds[0]!;
+      const otherFlowComputer = flowFromBondToElement(otherBond, sourceElId);
+      const ratioFn = elementFns.get(sourceElId)!;
+      return (x) => otherFlowComputer(x) / ratioFn({ z: 0, paValues, x });
+    }
+    if (sourceEl.kind === 'GY') {
+      // GY: flow_1 = effort_2 / ratio
+      const otherBonds = bondsOfElement(doc, sourceElId).filter((b) => b.id !== bond.id);
+      if (otherBonds.length !== 1) {
+        throw new DeriveError(`GY ${sourceElId}: 2本のbondが必要`);
+      }
+      const otherBond = otherBonds[0]!;
+      const otherEffortComputer = effortFromBondToElement(otherBond, sourceElId);
+      const ratioFn = elementFns.get(sourceElId)!;
+      return (x) => otherEffortComputer(x) / ratioFn({ z: 0, paValues, x });
     }
     if (sourceEl.kind === 'ZeroJunction') {
       // 0-junction の制約: Σ(sign_i * f_i) = 0
