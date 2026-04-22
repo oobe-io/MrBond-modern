@@ -12,6 +12,7 @@ import { mountToolbar } from './toolbar/toolbar.ts';
 import { mountParameterDialog } from './dialog/parameterDialog.ts';
 import { mountIoButtons } from './io/saveLoad.ts';
 import { openRunDialog } from './run/runDialog.ts';
+import { openOutputDialog } from './output/outputDialog.ts';
 
 const store = createStore();
 
@@ -21,12 +22,14 @@ const inspectorBody = document.getElementById('inspector-body')!;
 const statusEl = document.getElementById('status')!;
 const ioButtonsRoot = document.getElementById('io-buttons')!;
 const runBtn = document.getElementById('run-btn') as HTMLButtonElement;
+const outputBtn = document.getElementById('output-btn') as HTMLButtonElement;
 
 mountToolbar(toolbarRoot, store);
 mountCanvas(canvasRoot, store);
 mountParameterDialog(document.body, store);
 mountIoButtons(ioButtonsRoot, store);
 runBtn.addEventListener('click', () => openRunDialog(store));
+outputBtn.addEventListener('click', () => openOutputDialog(store));
 
 // Inspector の更新
 function renderInspector(): void {

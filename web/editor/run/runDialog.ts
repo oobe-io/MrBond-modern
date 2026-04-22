@@ -57,10 +57,15 @@ const STYLE_CSS = `
 .mrbond-run-body .result-box {
   background: #0f1115; border: 1px solid #2a2f38; border-radius: 4px;
   padding: 0.6rem; font-family: 'SF Mono', Monaco, monospace;
-  font-size: 0.75rem; color: #9aa0a6; max-height: 200px; overflow: auto;
+  font-size: 0.75rem; color: #9aa0a6; max-height: 120px; overflow: auto;
+  white-space: pre-wrap;
 }
 .mrbond-run-body .result-box.success { border-color: #3dbe8f; color: #6ee7b7; }
 .mrbond-run-body .result-box.error { border-color: #ef4444; color: #fca5a5; }
+.mrbond-run-body .plot-container {
+  background: #0f1115; border: 1px solid #2a2f38; border-radius: 4px;
+  height: 280px; margin-top: 0.5rem; padding: 0;
+}
 .mrbond-run-card footer {
   padding: 0.8rem 1rem; border-top: 1px solid #2a2f38;
   display: flex; gap: 0.5rem; justify-content: flex-end;
@@ -146,6 +151,7 @@ export function openRunDialog(store: Store): void {
       <div class="field">
         <label>結果</label>
         <div id="result-box" class="result-box">実行前</div>
+        <div id="plot-container" class="plot-container"></div>
       </div>
     </div>
     <footer>
@@ -158,6 +164,7 @@ export function openRunDialog(store: Store): void {
   const parInput = card.querySelector<HTMLTextAreaElement>('#par-input')!;
   const cInput = card.querySelector<HTMLTextAreaElement>('#c-input')!;
   const resultBox = card.querySelector<HTMLDivElement>('#result-box')!;
+  const plotContainer = card.querySelector<HTMLDivElement>('#plot-container')!;
   const runBtn = card.querySelector<HTMLButtonElement>('.run-btn')!;
   const cancelBtn = card.querySelector<HTMLButtonElement>('.cancel-btn')!;
   const downloadBtn = card.querySelector<HTMLButtonElement>('.download-btn')!;
@@ -198,7 +205,7 @@ export function openRunDialog(store: Store): void {
         }
         if (doc.outputs.length === 0) {
           resultBox.className = 'result-box error';
-          resultBox.textContent = '出力変数が設定されていません。\ndoc.outputs に少なくとも 1 つ追加してください（現状 UI 未実装：手動で JSON 編集 or パラメータダイアログ経由で）。';
+          resultBox.textContent = '出力変数が設定されていません。ヘッダーの「📊 Outputs」ボタンで設定してください。';
           return;
         }
         const derived = deriveFromGraph(doc);
@@ -208,8 +215,8 @@ export function openRunDialog(store: Store): void {
         lastCsv = simResult.csv;
         downloadBtn.disabled = false;
         resultBox.className = 'result-box success';
-        const previewHead = simResult.csv.split('\n').slice(0, 5).join('\n');
-        resultBox.textContent = `✓ 自動導出成功\n状態変数: ${derived.stateLabels.join(', ')}\n出力: ${derived.outputLabels.join(', ')}\n${simResult.rowCount} 行生成 (${elapsed.toFixed(0)}ms)\n\n${previewHead}\n...`;
+        resultBox.textContent = `✓ 自動導出成功\n状態変数: ${derived.stateLabels.join(', ')}  |  出力: ${derived.outputLabels.join(', ')}\n${simResult.rowCount} 行生成 (${elapsed.toFixed(0)}ms)、最終時刻 t=${simResult.finalTime.toFixed(5)}s`;
+        renderPlot(plotContainer, simResult.csv);
       } else {
         const parSrc = parInput.value.trim();
         const cSrc = cInput.value.trim();
@@ -225,8 +232,8 @@ export function openRunDialog(store: Store): void {
         lastCsv = result.csv;
         downloadBtn.disabled = false;
         resultBox.className = 'result-box success';
-        const previewHead = result.csv.split('\n').slice(0, 5).join('\n');
-        resultBox.textContent = `✓ ${result.rowCount} 行生成 (${elapsed.toFixed(0)}ms)、最終時刻 t=${result.finalTime.toFixed(5)}s\n\n${previewHead}\n...`;
+        resultBox.textContent = `✓ ${result.rowCount} 行生成 (${elapsed.toFixed(0)}ms)、最終時刻 t=${result.finalTime.toFixed(5)}s`;
+        renderPlot(plotContainer, result.csv);
       }
     } catch (err) {
       resultBox.className = 'result-box error';
@@ -234,6 +241,7 @@ export function openRunDialog(store: Store): void {
       resultBox.textContent = `${prefix}${(err as Error).message}`;
       downloadBtn.disabled = true;
       lastCsv = null;
+      plotContainer.innerHTML = '';
     }
   });
 
@@ -251,4 +259,108 @@ export function openRunDialog(store: Store): void {
 
   setMode('auto');
   document.body.appendChild(overlay);
+}
+
+/** CSV 文字列をパースして Canvas に波形描画 */
+function renderPlot(container: HTMLElement, csv: string): void {
+  container.innerHTML = '';
+  const lines = csv.trimEnd().split('\n');
+  if (lines.length < 2) return;
+  const header = lines[0]!.split(',').map((s) => s.trim());
+  const columnNames = header.slice(1);
+
+  const data: { t: number; vs: number[] }[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i]!.split(',').map((s) => Number.parseFloat(s.trim()));
+    if (parts.length < 2) continue;
+    data.push({ t: parts[0]!, vs: parts.slice(1) });
+  }
+  if (data.length < 2) return;
+
+  const canvas = document.createElement('canvas');
+  const rect = container.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = `${rect.width}px`;
+  canvas.style.height = `${rect.height}px`;
+  container.appendChild(canvas);
+  const ctx = canvas.getContext('2d')!;
+  ctx.scale(dpr, dpr);
+  const W = rect.width;
+  const H = rect.height;
+  const margin = { top: 24, right: 16, bottom: 32, left: 64 };
+  const plotW = W - margin.left - margin.right;
+  const plotH = H - margin.top - margin.bottom;
+
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (const d of data) {
+    for (const v of d.vs) {
+      if (v < yMin) yMin = v;
+      if (v > yMax) yMax = v;
+    }
+  }
+  const yRange = yMax - yMin || 1;
+  const yPad = yRange * 0.1;
+  yMin -= yPad;
+  yMax += yPad;
+  const xMin = data[0]!.t;
+  const xMax = data[data.length - 1]!.t;
+  const xRange = xMax - xMin || 1;
+
+  // Background
+  ctx.fillStyle = '#0f1115';
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = '#2a2f38';
+  ctx.lineWidth = 1;
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.fillStyle = '#9aa0a6';
+  for (let i = 0; i <= 4; i++) {
+    const y = margin.top + (plotH * i) / 4;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y);
+    ctx.lineTo(W - margin.right, y);
+    ctx.stroke();
+    const v = yMax - ((yMax - yMin) * i) / 4;
+    ctx.fillText(v.toExponential(2), 4, y + 3);
+  }
+  for (let i = 0; i <= 5; i++) {
+    const x = margin.left + (plotW * i) / 5;
+    const t = xMin + (xRange * i) / 5;
+    ctx.fillText(t.toFixed(2), x - 8, H - 12);
+  }
+  ctx.fillStyle = '#e8eaee';
+  ctx.fillText('time [s]', W / 2 - 18, H - 2);
+
+  // Lines
+  const colors = ['#6ee7b7', '#fbbf24', '#60a5fa', '#f87171', '#c084fc', '#fb923c'];
+  for (let ch = 0; ch < columnNames.length; ch++) {
+    ctx.strokeStyle = colors[ch % colors.length]!;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < data.length; i++) {
+      const d = data[i]!;
+      const v = d.vs[ch];
+      if (v === undefined || !Number.isFinite(v)) continue;
+      const x = margin.left + ((d.t - xMin) / xRange) * plotW;
+      const y = margin.top + ((yMax - v) / (yMax - yMin)) * plotH;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Legend
+  ctx.font = '10px -apple-system, sans-serif';
+  for (let ch = 0; ch < columnNames.length; ch++) {
+    const x = margin.left + 10 + ch * 80;
+    const y = 14;
+    ctx.fillStyle = colors[ch % colors.length]!;
+    ctx.fillRect(x, y - 6, 12, 2);
+    ctx.fillStyle = '#e8eaee';
+    ctx.fillText(columnNames[ch]!, x + 16, y);
+  }
 }
