@@ -9,6 +9,9 @@ import { createStore } from './shared/store.ts';
 import { ELEMENT_SYMBOL } from './shared/model.ts';
 import { mountCanvas } from './canvas/canvas.ts';
 import { mountToolbar } from './toolbar/toolbar.ts';
+import { mountParameterDialog } from './dialog/parameterDialog.ts';
+import { mountIoButtons } from './io/saveLoad.ts';
+import { openRunDialog } from './run/runDialog.ts';
 
 const store = createStore();
 
@@ -16,9 +19,14 @@ const toolbarRoot = document.getElementById('toolbar-root')!;
 const canvasRoot = document.getElementById('canvas-root')!;
 const inspectorBody = document.getElementById('inspector-body')!;
 const statusEl = document.getElementById('status')!;
+const ioButtonsRoot = document.getElementById('io-buttons')!;
+const runBtn = document.getElementById('run-btn') as HTMLButtonElement;
 
 mountToolbar(toolbarRoot, store);
 mountCanvas(canvasRoot, store);
+mountParameterDialog(document.body, store);
+mountIoButtons(ioButtonsRoot, store);
+runBtn.addEventListener('click', () => openRunDialog(store));
 
 // Inspector の更新
 function renderInspector(): void {
