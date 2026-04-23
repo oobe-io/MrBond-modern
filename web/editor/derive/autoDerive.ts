@@ -228,42 +228,51 @@ export function deriveFromGraph(doc: BondGraphDoc): DerivedModel {
   //    Se, Sf は定数。
   //    R は flow 入力に対する effort 出力（引数 Z = flow）。
   //    TF/GY は 2-port 要素、equation でスケーリング比を返す（引数なし）。
+  // 3a. パラメータ未設定の要素を一括検出して、まとめてエラー報告する。
+  //     1つずつ「SE1 未設定 → 直す → C1 未設定 → …」を繰り返すのは面倒なので、
+  //     足りない箇所を全部リストアップしてから止める。
+  const missingParams: string[] = [];
+  for (const el of doc.elements) {
+    if (!['Se', 'Sf', 'I', 'C', 'R', 'TF', 'GY'].includes(el.kind)) continue;
+    const eq = el.equation?.trim();
+    if (eq) continue; // ユーザが直接 equation を書いていればOK
+    const firstParamName = el.parameters[0]?.name;
+    if (!firstParamName) {
+      const hint = ({
+        Se: '（例: EIN=10）',
+        Sf: '（例: PF=0）',
+        I: '（例: M=10 質量）',
+        C: '（例: PK=100 バネ定数）',
+        R: '（例: PCF=10 ダンパ係数）',
+        TF: '（変換比）',
+        GY: '（ジャイレータ比）',
+      } as Record<string, string>)[el.kind] ?? '';
+      missingParams.push(`・${el.label ?? el.id} (${el.kind}) ${hint}`);
+    }
+  }
+  if (missingParams.length > 0) {
+    throw new DeriveError(
+      `以下の要素にパラメータが未設定です。要素をクリックで選択 → Enter でダイアログを開いて値を入力してください:\n${missingParams.join('\n')}`,
+    );
+  }
+
   const elementFns = new Map<string, (ctx: EvalContext) => number>();
   for (const el of doc.elements) {
     if (['Se', 'Sf', 'I', 'C', 'R', 'TF', 'GY'].includes(el.kind)) {
       const eq = el.equation?.trim();
       if (!eq) {
-        // デフォルト式を要素タイプから推測
+        // デフォルト式を要素タイプから推測（この時点で parameters[0] は必ず存在）
+        const pname = el.parameters[0]!.name;
         if (el.kind === 'Se' || el.kind === 'Sf') {
-          const pname = el.parameters[0]?.name;
-          if (!pname) throw new DeriveError(`${el.label ?? el.id}: パラメータが設定されていません`);
           elementFns.set(el.id, (_ctx) => paValues[pname]!);
-          continue;
-        }
-        if (el.kind === 'I') {
-          const pname = el.parameters[0]?.name;
-          if (!pname) throw new DeriveError(`${el.label ?? el.id}: 質量パラメータが必要です`);
+        } else if (el.kind === 'I') {
           elementFns.set(el.id, (ctx) => ctx.z / paValues[pname]!);
-          continue;
-        }
-        if (el.kind === 'C') {
-          const pname = el.parameters[0]?.name;
-          if (!pname) throw new DeriveError(`${el.label ?? el.id}: 容量パラメータが必要です`);
+        } else if (el.kind === 'C') {
           elementFns.set(el.id, (ctx) => paValues[pname]! * ctx.z);
-          continue;
-        }
-        if (el.kind === 'R') {
-          const pname = el.parameters[0]?.name;
-          if (!pname) throw new DeriveError(`${el.label ?? el.id}: 抵抗パラメータが必要です`);
+        } else if (el.kind === 'R') {
           elementFns.set(el.id, (ctx) => paValues[pname]! * ctx.z);
-          continue;
-        }
-        if (el.kind === 'TF' || el.kind === 'GY') {
-          // デフォルト: 第1パラメータを比として使う
-          const pname = el.parameters[0]?.name;
-          if (!pname) throw new DeriveError(`${el.label ?? el.id}: ${el.kind} の比パラメータが必要です`);
+        } else if (el.kind === 'TF' || el.kind === 'GY') {
           elementFns.set(el.id, (_ctx) => paValues[pname]!);
-          continue;
         }
       } else {
         elementFns.set(el.id, compileEquation(eq, knownParams));
@@ -619,15 +628,26 @@ export function deriveFromGraph(doc: BondGraphDoc): DerivedModel {
   const outputComputers: Computer[] = [];
   for (const out of doc.outputs) {
     const bond = doc.bonds.find((b) => b.id === out.bondId);
-    if (!bond) throw new DeriveError(`output bond not found: ${out.bondId}`);
-    // varName が "Displacement" → 積分量、etc. 簡易には bond の state index に対応する x[i]
-    // しかし bond は 2 要素間なので、どちらの state に対応するか判断が必要
-    // 単純化: from か to のいずれかが state なら、その x[i] を返す
+    if (!bond) throw new DeriveError(`出力ボンド ${out.bondId} が見つかりません`);
+    // from か to のどちらかが state (I or C) なら、そのインデックスに対応
     const fromState = stateIndexOf.get(bond.fromElementId);
     const toState = stateIndexOf.get(bond.toElementId);
     const idx = fromState ?? toState;
     if (idx === undefined) {
-      throw new DeriveError(`output bond ${out.bondId} に state element が接続されてません`);
+      // どのボンドなら state につながっているかリストアップ
+      const validBonds = doc.bonds
+        .filter((b) => stateIndexOf.has(b.fromElementId) || stateIndexOf.has(b.toElementId))
+        .map((b) => {
+          const sid = stateIndexOf.has(b.fromElementId) ? b.fromElementId : b.toElementId;
+          const sEl = doc.elements.find((e) => e.id === sid);
+          return `${b.id} (${sEl?.label ?? sid} に接続)`;
+        });
+      const hint = validBonds.length > 0
+        ? `\n\n状態要素 (I or C) に繋がっているボンドを選んでください:\n${validBonds.map((s) => `・${s}`).join('\n')}`
+        : '\n\nグラフに I 要素 or C 要素を配置し、ジャンクション経由で接続してください。';
+      throw new DeriveError(
+        `出力ボンド「${out.bondId} (${out.label})」は state 要素 (I や C) に直接繋がっていません。${hint}`,
+      );
     }
     outputComputers.push((x) => x[idx]!);
   }
